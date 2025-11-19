@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Detect Line</title>
+  <style>
+    :root { 
+      --primary: #ED1C24;
+      --primary-dark: #e85a4d;
+      --primary-light: #ff9d93;
+      --panel: #ffffff;
+      --text: #2d2d2d;
+      --text-dim: #7a7a7a;
+      --border: rgba(250, 115, 102, 0.2);
+      --shadow-md: 0 4px 18px rgba(0, 0, 0, 0.06);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      height: 100%;
+      background: #000;
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      overflow: hidden;
+    }
+    .wrap {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      height: 100%;
+    }
+    .toolbar {
+      position: relative;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      padding: 16px 28px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      box-shadow: var(--shadow-md);
+      z-index: 100;
+    }
+    .toolbar button {
+      background: #fff;
+      color: var(--text);
+      border: 1.5px solid var(--border);
+      padding: 9px 18px;
+      border-radius: 12px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      transition: all 0.2s;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+    }
+    .toolbar button:hover {
+      border-color: var(--primary);
+      transform: translateY(-2px);
+    }
+    #saveBtn {
+      background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+      border: none;
+      color: #fff;
+      font-weight: 700;
+      margin-left: 8px;
+    }
+    .coord {
+      margin-left: auto;
+      color: var(--text-dim);
+      font-size: 13px;
+      font-family: 'SF Mono', monospace;
+      padding: 8px 16px;
+      background: #fff;
+      border-radius: 10px;
+      border: 1.5px solid var(--border);
+    }
+    .device-info {
+      margin-left: 16px;
+      font-size: 13px;
+      color: var(--primary-dark);
+      font-weight: 600;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(237, 28, 36, 0.08);
+      border: 1px solid rgba(237, 28, 36, 0.25);
+    }
+    .stage {
+      background: #000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .board {
+      position: relative;
+      width: 100vw;
+      height: calc(100vh - 76px);
+      overflow: hidden;
+      background: #000;
+    }
+    #videoFrame {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      border: 0;
+      display: block;
+    }
+    canvas {
+      position: absolute;
+      inset: 0;
+      pointer-events: auto;
+      width: 100%;
+      height: 100%;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="toolbar">
+      <button id="undoBtn"><span>↶</span></button>
+      <button id="clearBtn"><span>✕</span></button>
+      <button id="saveBtn"><span>✔</span></button>
+
+      <span id="deviceInfo" class="device-info"></span>
+      <span class="coord" id="coord">x: –, y: –</span>
+    </div>
+
+    <div class="stage">
+      <div class="board" id="board">
+        <iframe
+          id="videoFrame"
+          src="https://visiflow-dev.m-tech.com.vn/webrtc/"
+          allow="camera; microphone; fullscreen"
+        ></iframe>
+        <canvas id="layer"></canvas>
+      </div>
+    </div>
+  </div>
+
+<script>
+  // ===== URL API (relative, để chạy được dưới /webrtc-drawline/) =====
+  const SAVE_URL = "save_points";
+  const LOAD_URL = "load_points";
+
+  // ====== i18n config (EN / JA) ======
+  const STRINGS = {
+    en: {
+      undoTitle: "Undo",
+      clearTitle: "Clear",
+      saveTitle: "Save",
+      deviceNone: "Device not selected",
+      devicePrefix: "Device: ",
+      alertNoDeviceHover: "Device info has not been received from widget.",
+      alertNoDeviceSave: "Device is not set.",
+      alertNoPoints: "No points to save.",
+      savedOk: "Saved.",
+      savedFail: "Failed to save."
+    },
+    ja: {
+      undoTitle: "元に戻す",
+      clearTitle: "クリア",
+      saveTitle: "保存",
+      deviceNone: "デバイスが選択されていません",
+      devicePrefix: "デバイス: ",
+      alertNoDeviceHover: "ウィジェットからデバイス情報を受信していません。",
+      alertNoDeviceSave: "デバイスが設定されていません。",
+      alertNoPoints: "保存するポイントがありません。",
+      savedOk: "保存しました。",
+      savedFail: "保存に失敗しました。"
+    }
+  };
+
+  let currentLang = "en";   // default
+  let currentDevice = null;
+
+  function setLanguage(lang) {
+    currentLang = (lang === "ja") ? "ja" : "en";
+    document.documentElement.lang = currentLang;
+    applyTexts();
+  }
+
+  function t(key) {
+    return (STRINGS[currentLang] && STRINGS[currentLang][key]) ||
+           (STRINGS.en && STRINGS.en[key]) ||
+           key;
+  }
+
+  const board = document.getElementById('board');
+  const layer = document.getElementById('layer');
+  const ctx = layer.getContext('2d');
+  const undoBtn = document.getElementById('undoBtn');
+  const clearBtn = document.getElementById('clearBtn');
+  const saveBtn = document.getElementById('saveBtn');
+  const coord = document.getElementById('coord');
+  const deviceInfo = document.getElementById('deviceInfo');
+
+  function applyTexts() {
+    undoBtn.title = t('undoTitle');
+    clearBtn.title = t('clearTitle');
+    saveBtn.title = t('saveTitle');
+
+    if (currentDevice) {
+      deviceInfo.textContent = t('devicePrefix') + currentDevice.name;
+    } else {
+      deviceInfo.textContent = t('deviceNone');
+    }
+  }
+
+  // ======= geometry & drawing =======
+  let points = [];
+
+  const FRAME_W = 1280;
+  const FRAME_H = 800;
+
+  let scale = 1;
+  let drawWidth = 0;
+  let drawHeight = 0;
+  let offsetX = 0;
+  let offsetY = 0;
+  let lastW = 0, lastH = 0;
+
+  function resizeCanvas() {
+    const rect = board.getBoundingClientRect();
+    lastW = rect.width;
+    lastH = rect.height;
+
+    layer.width = rect.width;
+    layer.height = rect.height;
+
+    scale = Math.min(rect.width / FRAME_W, rect.height / FRAME_H);
+    drawWidth = FRAME_W * scale;
+    drawHeight = FRAME_H * scale;
+
+    offsetX = (rect.width - drawWidth) / 2;
+    offsetY = (rect.height - drawHeight) / 2;
+
+    redraw();
+  }
+
+  function ensureSync() {
+    const rect = board.getBoundingClientRect();
+    if (rect.width !== lastW || rect.height !== lastH) resizeCanvas();
+  }
+
+  function displayToImageCoords(clientX, clientY) {
+    ensureSync();
+    const rect = layer.getBoundingClientRect();
+    const xDisp = clientX - rect.left;
+    const yDisp = clientY - rect.top;
+
+    const xIn = xDisp - offsetX;
+    const yIn = yDisp - offsetY;
+
+    if (xIn < 0 || yIn < 0 || xIn > drawWidth || yIn > drawHeight)
+      return { inside: false };
+
+    return {
+      inside: true,
+      xImg: Math.round(xIn / scale),
+      yImg: Math.round(yIn / scale)
+    };
+  }
+
+  function redraw() {
+    ctx.clearRect(0, 0, layer.width, layer.height);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "#ED1C24";
+
+    points.forEach(p => {
+      const x = p.x * scale + offsetX;
+      const y = p.y * scale + offsetY;
+      ctx.fillStyle = "#ED1C24";
+      ctx.beginPath();
+      ctx.arc(x, y, 5, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    for (let i = 0; i + 1 < points.length; i += 2) {
+      const a = points[i], b = points[i+1];
+      ctx.beginPath();
+      ctx.moveTo(a.x * scale + offsetX, a.y * scale + offsetY);
+      ctx.lineTo(b.x * scale + offsetX, b.y * scale + offsetY);
+      ctx.stroke();
+    }
+  }
+
+  async function loadPointsForCurrentDevice() {
+    if (!currentDevice) return;
+    try {
+      const url = `${LOAD_URL}?deviceId=${encodeURIComponent(currentDevice.id)}&deviceName=${encodeURIComponent(currentDevice.name)}`;
+      const res = await fetch(url, { method: "GET" });
+      if (!res.ok) {
+        console.error("load_points failed:", await res.text());
+        return;
+      }
+      const data = await res.json();
+      if (Array.isArray(data.points)) {
+        points = data.points.map(p => ({ x: p.x, y: p.y }));
+        redraw();
+      }
+      console.log("Loaded points:", data);
+    } catch (err) {
+      console.error("Error loading points:", err);
+    }
+  }
+
+  // ======= nhận message từ ThingsBoard (device + lang) =======
+  window.addEventListener("message", evt => {
+    const data = evt.data;
+    if (!data || data.type !== "TB_DEVICE_SELECTED") return;
+
+    if (data.lang) {
+      setLanguage(data.lang);
+    }
+
+    if (data.deviceId) {
+      currentDevice = {
+        id: data.deviceId,
+        name: data.deviceName || data.deviceId
+      };
+      applyTexts();
+      // Khi device được chọn, load sẵn các line đã lưu trong TB
+      loadPointsForCurrentDevice();
+    } else {
+      currentDevice = null;
+      points = [];
+      applyTexts();
+      redraw();
+    }
+
+    console.log("Received from TB:", data);
+  });
+
+  // ======= interactions =======
+  layer.addEventListener("mousemove", e => {
+    const r = displayToImageCoords(e.clientX, e.clientY);
+    if (!r.inside) {
+      coord.textContent = "x: –, y: –";
+      return;
+    }
+    coord.textContent = `x: ${r.xImg}, y: ${r.yImg}`;
+  });
+
+  layer.addEventListener("click", e => {
+    if (!currentDevice) {
+      alert(t('alertNoDeviceHover'));
+      return;
+    }
+    const r = displayToImageCoords(e.clientX, e.clientY);
+    if (!r.inside) return;
+    points.push({ x: r.xImg, y: r.yImg });
+    redraw();
+  });
+
+  undoBtn.onclick = () => {
+    if (!points.length) return;
+    points.pop();
+    redraw();
+  };
+
+  clearBtn.onclick = () => {
+    points = [];
+    redraw();
+  };
+
+  saveBtn.onclick = async () => {
+    if (!currentDevice) {
+      alert(t('alertNoDeviceSave'));
+      return;
+    }
+    if (!points.length) {
+      alert(t('alertNoPoints'));
+      return;
+    }
+
+    try {
+      const res = await fetch(SAVE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          image: "webrtc",
+          points,
+          deviceId: currentDevice.id,
+          deviceName: currentDevice.name
+        })
+      });
+
+      if (!res.ok) throw new Error(await res.text());
+      alert(t('savedOk'));
+    } catch (err) {
+      console.error(err);
+      alert(t('savedFail')); 
+    }
+  };
+
+  window.onresize = resizeCanvas;
+  // init
+  applyTexts();
+  resizeCanvas();
+</script>
+</body>
+</html>
